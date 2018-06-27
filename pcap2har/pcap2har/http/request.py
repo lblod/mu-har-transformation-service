@@ -6,6 +6,7 @@ import message as http
 from .. import settings
 from ..mediatype import MediaType
 from response import Response
+from base64 import b64decode
 
 class Request(Response):
     '''
@@ -37,7 +38,8 @@ class Request(Response):
             self.handle_compression()
             # try to get out unicode
             self.handle_text()
-
+        if self.mimeType == 'application/x-www-form-urlencoded':
+            self.text = b64decode(self.text)
         # get query string. its the URL after the first '?'
         uri = urlparse.urlparse(self.msg.uri)
         self.host = self.msg.headers['host'] if 'host' in self.msg.headers else ''
