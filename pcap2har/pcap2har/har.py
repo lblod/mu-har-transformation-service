@@ -34,6 +34,18 @@ def HTTPRequestJsonRepr(self):
     '''
     self = http.Request
     '''
+    content = {
+        'size': self.body_length,
+        'mimeType': self.mimeType
+    }
+    if self.compression_amount is not None:
+        content['compression'] = self.compression_amount
+    if self.text:
+        if self.encoding:
+            content['text'] = self.text
+            content['encoding'] = self.encoding
+        else:
+            content['text'] = self.text.encode('utf8')  # must transcode to utf-8
     return {
         'method': self.msg.method,
         'url': self.url,
@@ -43,6 +55,7 @@ def HTTPRequestJsonRepr(self):
         'headersSize': -1,
         'headers': header_json_repr(self.msg.headers),
         'bodySize': len(self.msg.body),
+        'content': content
     }
 http.Request.json_repr = HTTPRequestJsonRepr
 
