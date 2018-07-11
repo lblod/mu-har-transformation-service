@@ -47,6 +47,16 @@ def load_json_from_file( har_file ):
         else:
             raise ValueError("Could not process json file " + har_file)
 
+def import_gpg_key():
+    public_key = os.environ.get('PUBLIC_KEY_FILE')
+    subprocess.Popen("gpg --import {file}".format(file=public_key), shell=True).wait()
+
+def move_file(fr, to):
+    shutil.move(fr, to)
+    recipient = os.environ.get('PUBLIC_KEY_RECIPIENT')
+    subprocess.Popen("gpg --encrypt --recipient '{recipient}' --trust-model always {file}".format(file=to, recipient=recipient), shell=True).wait()
+    shutil.remove(to)
+
 def get_module_logger(mod_name):
     """
     To use this, do logger = get_module_logger(__name__)
@@ -107,15 +117,16 @@ def transform_pcap(root, pcap_file, inputfolder, outputfolder):
             if exc.errno != errno.EEXIST:
                 raise
 
+    input_path = os.path.join(root, pcap_file)
     output_name = os.path.join(new_output_folder, pcap_file) + ".har"
-    cmd = "python pcap2har {input} {output}".format(input=os.path.join(root, pcap_file), output=output_name)
+    cmd = "python pcap2har {input} {output}".format(input=input_path, output=output_name)
 
-    # move file to backup
+    # convert to har
     subprocess.Popen(cmd, shell=True).wait()
-    shutil.move(os.path.join(root, pcap_file), os.path.join(backups_dir, pcap_file))
+    # move file to backup
+    move_file(os.path.join(root, pcap_file), os.path.join(backups_dir, pcap_file))
 
     return output_name
-
 
 def enrich_har(har_file):
     """
@@ -144,10 +155,9 @@ def enrich_har(har_file):
 
     # move file to backup
     har_basename = os.path.basename( har_file )
-    shutil.move(har_file, os.path.join(backups_dir, har_basename))
+    move_file(har_file, os.path.join(backups_dir, har_basename))
 
     return newname
-
 
 def parse_recursive_har(har, har_name, isBase64 = False, isEntry = False):
     """
@@ -204,34 +214,6 @@ def parse_recursive_har(har, har_name, isBase64 = False, isEntry = False):
                 result[attr] = value
     return result
 
-
-def post_har(har_file, index, etype):
-    """
-    Posts a .har file to a given index in an ElasticSearch instance.
-
-    Args:
-        har_file: the .har file name.
-        index: the index name to post to in ElasticSearch.
-    """
-    decoded = load_json_from_file( har_file )
-    log = decoded['log']
-
-    if log['browser']['name']:
-        browser = log['browser']['name'] + "/" + log['browser']['version']
-
-    url = elastic_host + ":" + elastic_port + "/" + index + "/" + etype + "?pretty"
-
-    for i, entry in enumerate(log['entries']):
-        entry['browser'] = browser if hasattr(entry, 'browser') else False # why is this?
-        # del entry['response']['content'] # Delete the content? take only into account the request?
-        response = requests.post(url, data = json.dumps(entry))
-        logger.info(response.text)
-
-    # move file to backup
-    har_basename = os.path.basename( har_file )
-    shutil.move(har_file, os.path.join(backups_dir, har_basename))
-
-
 def transformation_pipeline(inputfolder, outputfolder):
     """
     Watches the folder inputfolder for new unobserved pcap files and converts them into har format.
@@ -258,33 +240,10 @@ def transformation_pipeline(inputfolder, outputfolder):
                 logger.info("[+] File: {har} not yet enriched. Enriching it..".format(har=os.path.basename(har_name)))
                 enriched_har_name = enrich_har(har_name)
 
-                # Do not post the whole HAR in ElasticSearch, it is only created for debugging purposes.
-                if not fich.split("_")[1] == "default":
-                    # POST TO ElasticSearch.
-                    logger.info("[+] Send file: {har} to ElasticSearch..".format(har=os.path.basename(enriched_har_name)))
-                    post_har(enriched_har_name, "hars", "har")
-
-                    # Only if it was properly transformed.
-                    observed_pcaps.append(fich)
-
-
-def is_elasticsearch_up():
-    try:
-        urllib2.urlopen(elastic_host + ":" + elastic_port, timeout=1)
-        logger.info("Connection to ElasticSearch successful")
-        return True
-    except urllib2.URLError as err:
-        logger.info(err)
-        return False
-
-
 if __name__ == '__main__':
-
-    while not is_elasticsearch_up():
-        logger.info("ElasticSearch not available yet.")
-        time.sleep(2)
-        continue
-
+    if os.environ.get('PUBLIC_KEY_FILE') is None:
+        raise OSError('The environment variable PUBLIC_KEY_FILE should be set to the location of your public key!')
+    import_gpg_key()
     while True:
         if os.path.exists(pcap_read_dir):
             transformation_pipeline(pcap_read_dir, har_output_dir)

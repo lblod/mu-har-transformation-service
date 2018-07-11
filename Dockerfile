@@ -8,7 +8,7 @@ ENV CONTAINER_DATA_DIR 'containers/'
 ENV CONTAINER_DATA_FILE 'containers.json'
 ENV SLEEP_PERIOD '2'
 
-RUN mkdir /app
+RUN mkdir /app && apt install gpg
 WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
