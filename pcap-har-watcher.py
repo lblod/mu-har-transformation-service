@@ -55,7 +55,7 @@ def move_file(fr, to):
     shutil.move(fr, to)
     recipient = os.environ.get('PUBLIC_KEY_RECIPIENT')
     subprocess.Popen("gpg --encrypt --recipient '{recipient}' --trust-model always {file}".format(file=to, recipient=recipient), shell=True).wait()
-    shutil.remove(to)
+    os.remove(to)
 
 def get_module_logger(mod_name):
     """
