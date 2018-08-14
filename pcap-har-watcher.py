@@ -17,6 +17,7 @@ import random
 import subprocess
 import urllib2
 from SPARQLWrapper import SPARQLWrapper, JSON
+from urllib2 import URLError
 
 har_output_dir = os.environ['HAR_OUTPUT_DIR']
 container_data_dir = os.environ['CONTAINER_DATA_DIR']
@@ -225,7 +226,10 @@ def mkdir_p(path):
 if __name__ == '__main__':
     notUp = True
     while notUp:
-        notUp = not query("ASK {?s ?p ?o}")
+        try:
+            notUp = not query("ASK {?s ?p ?o}")
+        except URLError as e:
+            pass
         if notUp:
             time.sleep(2.0)
             logger.info('SPARQL endpoint not available, waiting for 2 seconds')
