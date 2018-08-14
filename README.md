@@ -1,7 +1,6 @@
 # mu-har-transformation-service
 
-Watch a given folder for new pcap files and transform them into HAR files with a series of additional changes in order to enrich the files to be
-afterwards fed into an ELK instance (Elasticsearch, Logstash, Kibana).
+Watch a given folder for new pcap files and transform them into HAR files with a series of additional changes in order to enrich the files.
 This pcap files are originally meant to come from observing docker containers run in a network, so additional information about them will be
 included in pcap file naming scheme.
 
@@ -17,7 +16,6 @@ docker run --rm -it \
            -v "$PWD"/src:/app/src/ \
            -v "$PWD"/pcap:/app/pcap \
            -v "$PWD"/har:/app/har \
-           -v "$PWD"/docker-compose.yml:/app/docker-compose.yml \
            --name mu-har-transformation-service \
            mu-har-transformation-service
 
@@ -25,7 +23,6 @@ docker run --rm -it \
 
 * The **pcap/** folder contains the .pcap files generated previously by the **mu-docker-watcher-service** microservice.
 * The **har/** folder contains the .har (JSON) files converted from the .pcap.
-* The **docker-compose.yml** file contains information about the links that are between containers, and that information needs to be added to the .har files.
 
 
 ## Acknowledgments

@@ -6,7 +6,8 @@ ENV HAR_OUTPUT_DIR "har/"
 ENV BU_DIR "/app/backups/"
 ENV CONTAINER_DATA_DIR 'containers/'
 ENV CONTAINER_DATA_FILE 'containers.json'
-ENV SLEEP_PERIOD '2'
+ENV MU_SPARQL_ENDPOINT "http://database:8890/sparql"
+ENV SLEEP_PERIOD '30'
 
 RUN mkdir /app
 WORKDIR /app

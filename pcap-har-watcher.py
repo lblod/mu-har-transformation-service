@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import errno
 import json
 import signal
 import sys
@@ -15,20 +16,21 @@ import yaml
 import random
 import subprocess
 import urllib2
-import shutil
+from SPARQLWrapper import SPARQLWrapper, JSON
 
-
-observed_pcaps = []
-containers_link_info = {}
-
-elastic_host = "http://elasticsearch"
-elastic_port = "9200"
-pcap_read_dir = os.environ['PCAP_READ_DIR']
 har_output_dir = os.environ['HAR_OUTPUT_DIR']
-backups_dir = os.environ['BU_DIR']
 container_data_dir = os.environ['CONTAINER_DATA_DIR']
 container_data_file = os.environ['CONTAINER_DATA_FILE']
 sleep_period = os.environ['SLEEP_PERIOD']
+sparqlQuery = SPARQLWrapper(os.environ.get('MU_SPARQL_ENDPOINT'), returnFormat=JSON)
+
+def query(query):
+    """
+    Queries the SPARQL endpoint2
+    """
+    logger.debug(query)
+    sparqlQuery.setQuery(query)
+    return sparqlQuery.query().convert()
 
 def load_json_from_file( har_file ):
     """
@@ -70,25 +72,7 @@ def get_module_logger(mod_name):
 logger = get_module_logger(__name__)
 
 
-def parse_container_links(container_name):
-    """
-    Parses the containers.json file to extract information about the links to other containers for a given one.
-
-    Args:
-        container_name: the container to look for.
-    """
-
-    containers_links = {}
-    containers_file = container_data_dir + container_data_file
-    decoded = load_json_from_file( containers_file )
-    container = filter(lambda container: container_name in container['name'], decoded)
-    if container: # If not empty
-        containers_links = container[0]['links']
-
-    return containers_links
-
-
-def transform_pcap(root, pcap_file, inputfolder, outputfolder):
+def transform_pcap(pcap_file, inputfolder, outputfolder):
     """
     Transforms a single .pcap file into a .har file.
 
@@ -99,25 +83,40 @@ def transform_pcap(root, pcap_file, inputfolder, outputfolder):
     Raises:
         OSError: if there is a race condition while making a directory in the outut folder, this error will arise.
     """
-    new_output_folder = os.path.join(outputfolder, root.split(inputfolder, 1)[1])
-    if not os.path.exists(new_output_folder):
-        try:
-            os.makedirs(new_output_folder)
-        except OSError as exc: # Guard against race condition
-            if exc.errno != errno.EEXIST:
-                raise
-
-    output_name = os.path.join(new_output_folder, pcap_file) + ".har"
-    cmd = "python pcap2har {input} {output}".format(input=os.path.join(root, pcap_file), output=output_name)
-
-    # move file to backup
+    output_name = os.path.join(outputfolder, pcap_file) + ".har"
+    cmd = "python pcap2har {input} {output}".format(input=os.path.join(inputfolder, pcap_file), output=output_name)
     subprocess.Popen(cmd, shell=True).wait()
-    shutil.move(os.path.join(root, pcap_file), os.path.join(backups_dir, pcap_file))
-
     return output_name
 
+def network_monitors():
+    results = query("""
+       PREFIX logger:<http://mu.semte.ch/vocabularies/ext/docker-logger/>
+       PREFIX mu: <http://mu.semte.ch/vocabularies/core/>
+       PREFIX docker: <https://w3.org/ns/bde/docker#>
+       SELECT ?id ?name ?uri ?status ?path ?composeProject ?composeService ?composeContainerNumber
+       WHERE {
+        ?uri a logger:NetworkMonitor;
+             mu:uuid ?id;
+             logger:status ?status;
+             logger:path ?path;
+             logger:monitors ?dockerContainer.
+       ?dockerContainer docker:name ?name.
+       OPTIONAL {
+         ?dockerContainer docker:label ?labelP.
+         ?labelP docker:key "com.docker.compose.project";
+                 docker:value ?composeProject.
+         ?dockerContainer docker:label ?labelS.
+         ?labelS docker:key "com.docker.compose.service";
+                 docker:value ?composeService.
+         ?dockerContainer docker:label ?labelC.
+         ?labelC docker:key "com.docker.compose.container-number";
+                 docker:value ?composeContainerNumber.
+       }
+    }
+    """)
+    return results["results"]["bindings"]
 
-def enrich_har(har_file):
+def enrich_har(monitor, har_file):
     """
     Modifies an existing HAR file with additional information about the container
     it involves and the links to other containers. Also converts base64 strings
@@ -128,28 +127,26 @@ def enrich_har(har_file):
     Args:
         har_file: the har file
     """
-    container_name = har_file.split("_")[1]
-
-    # If the container is not yet in the saved containers info, save it for later use.
-    if not container_name in containers_link_info:
-        containers_link_info[container_name] = parse_container_links(container_name)
-
     decoded = load_json_from_file( har_file )
-    result = parse_recursive_har(decoded, har_file)
+    if monitor["composeProject"].has_key('value'):
+        meta_info = {
+            'compose-project': monitor["composeProject"]["value"],
+            'compose-service': monitor["composeService"]["value"],
+            'compose-container-number': monitor["composeContainerNumber"]["value"]
+        }
+    else:
+        meta_info = {}
+    result = parse_recursive_har(meta_info, decoded, har_file)
 
     newname = har_file[:-4] + '.trans.har'
     with open(newname, 'w') as f:
         json.dump(result, f, indent=2, encoding='utf8', sort_keys=True)
         f.write('\n')
 
-    # move file to backup
-    har_basename = os.path.basename( har_file )
-    shutil.move(har_file, os.path.join(backups_dir, har_basename))
-
     return newname
 
 
-def parse_recursive_har(har, har_name, isBase64 = False, isEntry = False):
+def parse_recursive_har(meta, har, har_name, isBase64 = False, isEntry = False):
     """
     Transform the har object decoding the base64 strings into JSON objects.
 
@@ -159,39 +156,30 @@ def parse_recursive_har(har, har_name, isBase64 = False, isEntry = False):
     result = {}
     # If it is one of the entries in the entries[] array, enrich it with additional information.
     if isEntry == True:
-        stack = har_name.split("_")[0].split("/")[-1]
-        container_name = har_name.split("_")[1]
-        if container_name == "default":
-            interface = har_name.split('_')[2]
-            result['links'] = containers_link_info
-        else:
-            interface = har_name.split('_')[5]
-            if container_name in containers_link_info:
-                result['links'] = containers_link_info[container_name]
-        result['meta'] = { 'stack': stack, 'container': container_name, 'interface': interface }
+        result['meta'] = meta
 
     # Loop through the keys in the HAR file
     for attr, value in har.iteritems():
         # If we stumble upon base64 content, we call the function to decode it.
         if (type(har[attr]) is dict) and (attr == "content"):
             if "encoding" in har[attr].keys() and har[attr]["encoding"] == "base64" and (har[attr]["mimeType"] == "application/json" or har[attr]["mimeType"] == "application/vnd.api+json" or har[attr]["mimeType"] == "application/sparql-results+json"):
-                result[attr] = parse_recursive_har(har[attr], har_name, True)
+                result[attr] = parse_recursive_har(meta, har[attr], har_name, True)
             else:
-                result[attr] = parse_recursive_har(har[attr], har_name)
+                result[attr] = parse_recursive_har(meta, har[attr], har_name)
         # If the key is a dictionary just loop through it.
         elif type(har[attr]) is dict:
-            result[attr] = parse_recursive_har(har[attr], har_name)
+            result[attr] = parse_recursive_har(meta, har[attr], har_name)
         # If the key is a list, some data transformation is needed.
         elif type(har[attr]) is list:
             result[attr] = []
             if attr == "entries": # Enrich each entry in the entries[] array.
                 for i, val in enumerate(har[attr]):
-                    result[attr].append(parse_recursive_har(val, har_name, False, True))
+                    result[attr].append(parse_recursive_har(meta, val, har_name, False, True))
             elif attr == "headers": # Convert headers from an array into an object.
                 result[attr] = { header['name']: header['value'] for header in har[attr] }
             else:
                 for i, val in enumerate(har[attr]):
-                    result[attr].append(parse_recursive_har(val, har_name))
+                    result[attr].append(parse_recursive_har(meta, val, har_name))
         # If it is a value in base64 (previously detected) then decode it, otherwise return it as is.
         else:
             if attr == "text" and isBase64 == True:
@@ -204,90 +192,53 @@ def parse_recursive_har(har, har_name, isBase64 = False, isEntry = False):
                 result[attr] = value
     return result
 
-
-def post_har(har_file, index, etype):
-    """
-    Posts a .har file to a given index in an ElasticSearch instance.
-
-    Args:
-        har_file: the .har file name.
-        index: the index name to post to in ElasticSearch.
-    """
-    decoded = load_json_from_file( har_file )
-    log = decoded['log']
-
-    if log['browser']['name']:
-        browser = log['browser']['name'] + "/" + log['browser']['version']
-
-    url = elastic_host + ":" + elastic_port + "/" + index + "/" + etype + "?pretty"
-
-    for i, entry in enumerate(log['entries']):
-        entry['browser'] = browser if hasattr(entry, 'browser') else False # why is this?
-        # del entry['response']['content'] # Delete the content? take only into account the request?
-        response = requests.post(url, data = json.dumps(entry))
-        logger.info(response.text)
-
-    # move file to backup
-    har_basename = os.path.basename( har_file )
-    shutil.move(har_file, os.path.join(backups_dir, har_basename))
-
-
-def transformation_pipeline(inputfolder, outputfolder):
+def transformation_pipeline(monitor, inputfolder, outputfolder, processedfolder):
     """
     Watches the folder inputfolder for new unobserved pcap files and converts them into har format.
 
     Args:
+        monitor: meta information about the pcaps
         inputfolder: input folder to look for pcap files.
         outputfolder: output folder to save the converted har files.
     """
-    if not os.path.exists(backups_dir):
-        try:
-            os.makedirs(backups_dir)
-        except OSError as exc: # Guard against race condition
-            if exc.errno != errno.EEXIST:
-                raise
-
     for root, dirs, files in os.walk(inputfolder):
         for fich in files:
-            if fich.endswith(".pcap") and fich not in observed_pcaps:
+            if fich.endswith(".pcap"):
                 logger.info("[+] File: {pcap} not yet transformed. Transforming it..".format(pcap=fich))
                 # PCAP to HAR
-                har_name = transform_pcap(root, fich, inputfolder, outputfolder)
-
+                har_name = transform_pcap(fich, inputfolder, outputfolder)
+                shutil.move(os.path.join(inputfolder, fich), os.path.join(processedfolder, fich))
                 # ENRICH HAR
                 logger.info("[+] File: {har} not yet enriched. Enriching it..".format(har=os.path.basename(har_name)))
-                enriched_har_name = enrich_har(har_name)
+                enriched_har_name = enrich_har(monitor, har_name)
+                shutil.move(har_name, os.path.join(processedfolder, os.path.basename(har_name)))
 
-                # Do not post the whole HAR in ElasticSearch, it is only created for debugging purposes.
-                if not fich.split("_")[1] == "default":
-                    # POST TO ElasticSearch.
-                    logger.info("[+] Send file: {har} to ElasticSearch..".format(har=os.path.basename(enriched_har_name)))
-                    post_har(enriched_har_name, "hars", "har")
-
-                    # Only if it was properly transformed.
-                    observed_pcaps.append(fich)
-
-
-def is_elasticsearch_up():
+def mkdir_p(path):
     try:
-        urllib2.urlopen(elastic_host + ":" + elastic_port, timeout=1)
-        logger.info("Connection to ElasticSearch successful")
-        return True
-    except urllib2.URLError as err:
-        logger.info(err)
-        return False
-
+        os.makedirs(path)
+    except OSError as exc:  # Python >2.5
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
 
 if __name__ == '__main__':
-
-    while not is_elasticsearch_up():
-        logger.info("ElasticSearch not available yet.")
-        time.sleep(2)
-        continue
-
+    notUp = True
+    while notUp:
+        notUp = not query("ASK {?s ?p ?o}")
+        if notUp:
+            time.sleep(2.0)
+            logger.info('SPARQL endpoint not available, waiting for 2 seconds')
     while True:
-        if os.path.exists(pcap_read_dir):
-            transformation_pipeline(pcap_read_dir, har_output_dir)
-            time.sleep(float(sleep_period))
-        else:
-            raise OSError('The directory' + pcap_read_dir + ' does not exist')
+        for monitor in network_monitors():
+            logger.info('checking for pcap files for container' + monitor["name"]["value"])
+            pcap_dir = monitor["path"]["value"].replace('share://','/data/pcaps/')
+            if os.path.exists(pcap_dir):
+                har_dir = monitor["path"]["value"].replace('share://','/data/hars/')
+                processed_dir = monitor["path"]["value"].replace('share://','/data/processed/')
+                mkdir_p(har_dir)
+                mkdir_p(processed_dir)
+                transformation_pipeline(monitor, pcap_dir, har_dir, processed_dir )
+            else:
+                logger.error('The directory' + pcap_dir + ' does not exist')
+        time.sleep(float(sleep_period))
