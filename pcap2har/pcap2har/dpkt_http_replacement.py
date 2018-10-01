@@ -155,7 +155,7 @@ class Request(Message):
         'version':'1.0',
         }
     __methods = dict.fromkeys((
-        'GET', 'PUT', 'ICY',
+        'GET', 'PUT', 'ICY', 'PATCH',
         'COPY', 'HEAD', 'LOCK', 'MOVE', 'POLL', 'POST',
         'BCOPY', 'BMOVE', 'MKCOL', 'TRACE', 'LABEL', 'MERGE',
         'DELETE', 'SEARCH', 'UNLOCK', 'REPORT', 'UPDATE', 'NOTIFY',
