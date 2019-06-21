@@ -129,7 +129,10 @@ def enrich_har(monitor, har_file):
         har_file: the har file
     """
     decoded = load_json_from_file( har_file )
-    if monitor["composeProject"].has_key('value'):
+    if not monitor.has_key("composeProject") or not monitor.has_key("composeService"):
+        print "Cannot monitor container outside of service ", monitor["id"], " ", monitor["name"]
+        return
+    elif monitor["composeProject"].has_key('value'):
         meta_info = {
             'compose-project': monitor["composeProject"]["value"],
             'compose-service': monitor["composeService"]["value"],
@@ -212,7 +215,8 @@ def transformation_pipeline(monitor, inputfolder, outputfolder, processedfolder)
                 # ENRICH HAR
                 logger.info("[+] File: {har} not yet enriched. Enriching it..".format(har=os.path.basename(har_name)))
                 enriched_har_name = enrich_har(monitor, har_name)
-                shutil.move(har_name, os.path.join(processedfolder, os.path.basename(har_name)))
+                if enriched_har_name:
+                    shutil.move(har_name, os.path.join(processedfolder, os.path.basename(har_name)))
 
 def mkdir_p(path):
     try:
